@@ -8,3 +8,5 @@ edition = "2018"
 
 [dependencies]
 arrayvec = "0.5.1"
+failure = "0.1.6"
+maplit = "1.0.2"
