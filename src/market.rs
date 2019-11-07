@@ -4,6 +4,7 @@ use failure::Error;
 use failure::_core::sync::atomic::Ordering::AcqRel;
 use crate::market::AddSupplyResponse::InsufficientSupply;
 use std::collections::HashMap;
+use crate::record::add;
 
 pub trait Market {
     fn price(&self, good: Good, amt: i16) -> f64;
@@ -13,12 +14,13 @@ pub trait Market {
     }
 
     fn add_supply(&mut self, good: Good, amt: i16) -> AddSupplyResponse;
+    fn supply(&mut self, good: Good) -> i16;
 
     fn trade(&mut self, agent: &mut Agent, good: Good, amt: i16) -> Result<(), Error> {
         let value = self.value(good, amt);
 
         if agent.cash < value {
-            return Err(failure::err_msg("Insufficient cash"))
+            return Err(failure::err_msg("Insufficient cash"));
         }
 
         match self.add_supply(good, -amt) {
@@ -40,27 +42,69 @@ pub trait Market {
     }
 }
 
-struct SupplyPrice {
-    pub supply: i16,
-    pub price: fn(x: f64) -> f64,
+pub trait IndPrice {
+    fn price(&self, amt: i16) -> f64;
+    fn add_supply(&mut self, amt: i16) -> AddSupplyResponse;
+    fn supply(&self) -> i16;
 }
 
-pub struct LinearMarket(HashMap<Good, SupplyPrice>);
+pub struct SupplyPrice {
+    pub supply: i16,
+    s0: i16,
+    p0: i16,
+    slope: f64
+}
 
-impl Market for LinearMarket {
+impl SupplyPrice {
+    pub fn new(s0: i16, p0: i16, slope: f64) -> SupplyPrice {
+        SupplyPrice { supply: s0, s0, p0, slope }
+    }
+}
+
+impl IndPrice for SupplyPrice {
+    fn price(&self, amt: i16) -> f64 {
+        let x = self.supply + amt / 2;
+        self.slope * (x - self.s0) as f64 + self.p0 as f64
+    }
+
+    fn add_supply(&mut self, amt: i16) -> AddSupplyResponse {
+        if self.supply + amt <= 0 {
+            AddSupplyResponse::InsufficientSupply(self.supply, amt)
+        } else {
+            self.supply += amt;
+            AddSupplyResponse::Ok(self.supply)
+        }
+    }
+
+    fn supply(&self) -> i16 {
+        self.supply
+    }
+}
+
+
+
+pub struct IndMarket<T: IndPrice>(HashMap<Good, T>);
+pub type LinearMarket = IndMarket<SupplyPrice>;
+
+impl<T: IndPrice> IndMarket<T> {
+    pub fn new(m: HashMap<Good, T>) -> Self {
+        Self(m)
+    }
+}
+
+impl<T: IndPrice> Market for IndMarket<T> {
     fn price(&self, good: Good, amt: i16) -> f64 {
-        let SupplyPrice {supply, price} = self.0[&good];
-        price(supply as f64 + amt as f64 / 2.)
+        let p = self.0[&good].price(amt);
+        add("price", (good, p, self.0[&good].supply()));
+        p
     }
 
     fn add_supply(&mut self, good: Good, amt: i16) -> AddSupplyResponse {
-        let sp= self.0.get_mut(&good).unwrap();
-        if sp.supply + amt <= 0 {
-            AddSupplyResponse::InsufficientSupply(sp.supply, amt)
-        } else {
-            sp.supply += amt;
-            AddSupplyResponse::Ok(sp.supply)
-        }
+        self.0.get_mut(&good).unwrap().add_supply(amt)
+    }
+
+    fn supply(&mut self, good: Good) -> i16 {
+        self.0[&good].supply()
     }
 }
 
