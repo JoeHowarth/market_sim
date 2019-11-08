@@ -26,7 +26,6 @@ pub fn init_recorder(run_name: impl Into<String>, over_write: bool) {
             .collect::<String>();
         "./data/".to_string() + &run_name + "_" + &rand + "/"
     };
-    dbg!(&path);
     create_dir_all(&path).unwrap();
     REC.lock().unwrap().directory = path;
 }
