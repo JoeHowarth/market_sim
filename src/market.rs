@@ -1,36 +1,31 @@
 use crate::goods::Good;
-use crate::agent::Agent;
+use crate::agent::{Agent, AgentId};
 use failure::Error;
-use failure::_core::sync::atomic::Ordering::AcqRel;
-use crate::market::AddSupplyResponse::InsufficientSupply;
+use std::sync::atomic::Ordering::AcqRel;
 use std::collections::HashMap;
 use crate::record::add;
+use std::collections::hash_map::RandomState;
+use rand::distributions::weighted::alias_method::WeightedIndex;
+use std::iter::repeat;
+use rand::prelude::{IteratorRandom, SmallRng, SliceRandom};
+use rand::SeedableRng;
+use crate::market::UnexecutedTrades::{Sells, Buys};
+
+pub type GoodMap<T> = HashMap<Good, T>;
 
 pub trait Market {
-    fn price(&self, good: Good, amt: i16) -> f64;
+    fn price(&self, good: Good) -> i16;
 
-    fn value(&self, good: Good, amt: i16) -> f64 {
-        self.price(good, amt) * amt as f64
-    }
+    fn trade(&mut self, agent: &Agent, good: Good, amt: i16) -> Result<(), Error>;
 
-    fn add_supply(&mut self, good: Good, amt: i16) -> AddSupplyResponse;
-    fn supply(&mut self, good: Good) -> i16;
+    fn execute_trade(&mut self, agents: &mut HashMap<AgentId, Agent>, good: Good) -> UnexecutedTrades;
 
-    fn trade(&mut self, agent: &mut Agent, good: Good, amt: i16) -> Result<(), Error> {
-        let value = self.value(good, amt);
+//    fn execute_trades(&mut self, agents: &mut [Agent]) -> UnexecutedTrades;
 
-        if agent.cash < value {
-            return Err(failure::err_msg("Insufficient cash"));
-        }
+    fn update_price(&mut self, ts: UnexecutedTrades) -> Result<GoodMap<i16>, Error>;
 
-        match self.add_supply(good, -amt) {
-            AddSupplyResponse::Ok(_) => {
-                agent.cash -= value;
-                *agent.res.get_mut(&good).unwrap() += amt;
-                Ok(())
-            }
-            x => Err(Error::from(x))
-        }
+    fn value(&self, good: Good, amt: i16) -> i16 {
+        self.price(good) * amt
     }
 
     fn buy(&mut self, agent: &mut Agent, good: Good, amt: i16) -> Result<(), Error> {
@@ -42,76 +37,124 @@ pub trait Market {
     }
 }
 
-pub trait IndPrice {
-    fn price(&self, amt: i16) -> f64;
-    fn add_supply(&mut self, amt: i16) -> AddSupplyResponse;
-    fn supply(&self) -> i16;
+pub enum UnexecutedTrades {
+    Buys(u16, u16),
+    Sells(u16, u16),
 }
 
-pub struct SupplyPrice {
-    pub supply: i16,
-    s0: i16,
-    p0: i16,
-    slope: f64
+
+pub struct ClearingMarket {
+    pub prices: GoodMap<i16>,
+    pub trades: GoodMap<Vec<(AgentId, i16)>>,
 }
 
-impl SupplyPrice {
-    pub fn new(s0: i16, p0: i16, slope: f64) -> SupplyPrice {
-        SupplyPrice { supply: s0, s0, p0, slope }
+impl ClearingMarket {
+    pub fn new(prices: GoodMap<i16>) -> ClearingMarket {
+        let trades = prices.iter().map(|(&k,v)| (k, Vec::new())).collect();
+        ClearingMarket { prices, trades }
+    }
+
+    fn execute_transaction(&self, agents: &mut HashMap<AgentId, Agent>, buyer: AgentId, seller: AgentId, good: Good) {
+        let price = self.price(good);
+
+        let buyer = agents.get_mut(&buyer).unwrap();
+        buyer.cash -= price;
+        *buyer.res.get_mut(&good).unwrap() += 1;
+
+        let seller = agents.get_mut(&seller).unwrap();
+        seller.cash += price;
+        *seller.res.get_mut(&good).unwrap() -= 1;
     }
 }
 
-impl IndPrice for SupplyPrice {
-    fn price(&self, amt: i16) -> f64 {
-        let x = self.supply + amt / 2;
-        self.slope * (x - self.s0) as f64 + self.p0 as f64
+fn partition_and_shuffle_trades(trades: &mut Vec<(AgentId, i16)>) -> (Vec<AgentId>, Vec<AgentId>) {
+    type Trades = Vec<(AgentId, i16)>;
+    let mut rng = SmallRng::from_entropy();
+    let f = |pred: fn(i16) -> bool| {
+        trades.iter()
+            .filter(|x| pred(x.1))
+            .flat_map(|(a, x)| repeat(*a).take(x.abs() as usize))
+            .collect::<Vec<_>>()
+    };
+
+    let mut buys: Vec<AgentId> = f(|x| x > 0);
+    let mut sells: Vec<AgentId> = f(|x| x < 0);
+    buys.shuffle(&mut rng);
+    sells.shuffle(&mut rng);
+    trades.clear();
+    (buys, sells)
+}
+
+impl Market for ClearingMarket {
+    fn price(&self, good: Good) -> i16 {
+        self.prices[&good]
     }
 
-    fn add_supply(&mut self, amt: i16) -> AddSupplyResponse {
-        if self.supply + amt <= 0 {
-            AddSupplyResponse::InsufficientSupply(self.supply, amt)
+    fn trade(&mut self, agent: &Agent, good: Good, amt: i16) -> Result<(), Error> {
+        if amt > 0 && agent.cash < self.value(good, amt) {
+            Err(failure::err_msg("insufficient cash to make trade"))
         } else {
-            self.supply += amt;
-            AddSupplyResponse::Ok(self.supply)
+            Ok(self.trades.get_mut(&good).unwrap().push((agent.id, amt)))
         }
     }
 
-    fn supply(&self) -> i16 {
-        self.supply
+    fn execute_trade(&mut self, agents: &mut HashMap<AgentId, Agent>, good: Good) -> UnexecutedTrades {
+        let trades = self.trades
+            .get_mut(&good)
+            .unwrap();
+        let total_trades = trades.len();
+        let (mut buys, mut sells) = partition_and_shuffle_trades(trades);
+
+        let num_trades = buys.len().min(sells.len());
+        for _ in 0..num_trades {
+            let b = buys.pop();
+            let s = sells.pop();
+            match (b, s) {
+                (Some(b), Some(s)) => {
+                    self.execute_transaction(agents, b, s, good);
+                }
+//                (None, Some(s)) => sells.push(s),
+//                (Some(b), None) => buys.push(b),
+                _ => eprintln!("Should never happen")
+            }
+        }
+
+        assert_eq!(num_trades, buys.len().max(sells.len()));
+        match (buys.len(), sells.len()) {
+            (0, x) => Sells(x as u16, total_trades as u16),
+            (x, 0) => Buys(x as u16, total_trades as u16),
+            (x, y) => {
+                eprintln!("Shouldn't happen {}, {}", x, y);
+                Sells(0, 0)
+            }
+        }
+    }
+
+    fn update_price(&mut self, _ts: UnexecutedTrades) -> Result<HashMap<Good, i16, RandomState>, Error> {
+        unimplemented!()
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::goods::Good::{Food, Grain};
+    use maplit::hashmap;
+
+    #[test]
+    fn hi() {
+        let mut agents = Agent::pre_made(2);
+        let mut market = ClearingMarket::new(hashmap! { Food => 20, Grain => 20, });
+        let keys: Vec<_> = agents.keys().into_iter().collect();
+        let b = *keys[0];
+        let s = *keys[1];
+
+        market.trade(&agents[&b], Food, 2);
+        market.trade(&agents[&s], Food, -2);
+
+        assert_eq!(market.trades[&Food], vec![(b, 2), (s, -2)]);
 
 
-pub struct IndMarket<T: IndPrice>(HashMap<Good, T>);
-pub type LinearMarket = IndMarket<SupplyPrice>;
-
-impl<T: IndPrice> IndMarket<T> {
-    pub fn new(m: HashMap<Good, T>) -> Self {
-        Self(m)
     }
 }
 
-impl<T: IndPrice> Market for IndMarket<T> {
-    fn price(&self, good: Good, amt: i16) -> f64 {
-        let p = self.0[&good].price(amt);
-        add("price", (good, p, self.0[&good].supply()));
-        p
-    }
-
-    fn add_supply(&mut self, good: Good, amt: i16) -> AddSupplyResponse {
-        self.0.get_mut(&good).unwrap().add_supply(amt)
-    }
-
-    fn supply(&mut self, good: Good) -> i16 {
-        self.0[&good].supply()
-    }
-}
-
-#[derive(Fail, Debug)]
-pub enum AddSupplyResponse {
-    #[fail(display = "Insufficient supply: {}", _0)]
-    InsufficientSupply(i16, i16),
-    #[fail(display = "Update successful, new supply: {}", _0)]
-    Ok(i16),
-}

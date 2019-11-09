@@ -3,12 +3,14 @@ use crate::goods::{Good, Task};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU16, Ordering::Relaxed};
 use crate::market::Market;
+use maplit::hashmap;
+use crate::goods::Good::{Food, Grain};
 
 #[derive(Clone, PartialEq, Debug, Serialize)]
 pub struct Agent {
     pub id: u16,
-    pub cash: f64,
-    pub res: HashMap<Good, i16>
+    pub cash: i16,
+    pub res: HashMap<Good, i16>,
 }
 
 // track last used id
@@ -18,17 +20,27 @@ pub fn new_agent_id() -> u16 {
     ID.fetch_add(1, Relaxed)
 }
 
+pub type AgentId = u16;
+
 impl Agent {
-    pub fn new(cash: f64, res: HashMap<Good, i16>) -> Agent {
+    pub fn pre_made(num: usize) -> HashMap<AgentId, Agent> {
+        let mut agents = HashMap::with_capacity(num);
+        for _i in 0..num {
+            Agent::new_into_map(&mut agents, 100, hashmap! {Grain => 10, Food => 10});
+        }
+        agents
+    }
+
+    pub fn new(cash: i16, res: HashMap<Good, i16>) -> Agent {
         Agent { id: new_agent_id(), cash, res }
     }
 
-    pub fn new_into_map(map: &mut HashMap<u16, Agent>, cash: f64, res: HashMap<Good, i16>) {
+    pub fn new_into_map(map: &mut HashMap<u16, Agent>, cash: i16, res: HashMap<Good, i16>) {
         let id = new_agent_id();
         map.insert(id, Agent { id, cash, res });
     }
 
-    pub fn new_with_id(id: u16, cash: f64, res: HashMap<Good, i16>) -> Agent {
+    pub fn new_with_id(id: u16, cash: i16, res: HashMap<Good, i16>) -> Agent {
         Agent { id, cash, res }
     }
 
@@ -36,7 +48,7 @@ impl Agent {
         tasks.iter()
             .max_by_key(|&task| {
                 let (val, _, cost) = task.value(market);
-                if cost < self.cash {val as i32} else {0}
+                if cost < self.cash { val as i32 } else { 0 }
             })
             .expect("If tasks non-empty, then should have best task")
     }

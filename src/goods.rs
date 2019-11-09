@@ -16,13 +16,11 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn value(&self, market: &dyn Market) -> (f64, f64, f64) {
-        let cost: f64 = self.inputs.iter()
+    pub fn value(&self, market: &dyn Market) -> (i16, i16, i16) {
+        let cost = self.inputs.iter()
             .map(|(good, amt)| market.value(*good, *amt))
             .sum();
         let revenue = market.value(self.output.0, self.output.1);
-
-
         (revenue - cost, revenue, cost)
     }
 
@@ -32,7 +30,7 @@ impl Task {
         Task {
             name: name.into(),
             inputs: a,
-            output
+            output,
         }
     }
 }
