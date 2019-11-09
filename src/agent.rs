@@ -23,25 +23,17 @@ pub fn new_agent_id() -> u16 {
 pub type AgentId = u16;
 
 impl Agent {
-    pub fn pre_made(num: usize) -> HashMap<AgentId, Agent> {
-        let mut agents = HashMap::with_capacity(num);
-        for _i in 0..num {
-            Agent::new_into_map(&mut agents, 100, hashmap! {Grain => 10, Food => 10});
-        }
-        agents
-    }
+    pub fn choose_trade(&self, market: &mut dyn Market, marginal_utility: &[i16], good: Good) -> i16 {
+        let mu = marginal_utility;
+        let price = market.price(good);
+        let pi = match mu.binary_search(&price) {
+            Ok(i) => i as f64,
+            Err(i) => i as f64 + 0.5
+        };
 
-    pub fn new(cash: i16, res: HashMap<Good, i16>) -> Agent {
-        Agent { id: new_agent_id(), cash, res }
-    }
+        pi - self.res[&good] as f64;
 
-    pub fn new_into_map(map: &mut HashMap<u16, Agent>, cash: i16, res: HashMap<Good, i16>) {
-        let id = new_agent_id();
-        map.insert(id, Agent { id, cash, res });
-    }
-
-    pub fn new_with_id(id: u16, cash: i16, res: HashMap<Good, i16>) -> Agent {
-        Agent { id, cash, res }
+        1
     }
 
     pub fn choose_task(&self, tasks: &'a [Task], market: &dyn Market) -> &'a Task {
@@ -64,5 +56,26 @@ impl Agent {
         }
         let &(good, amt) = &task.output;
         *self.res.get_mut(&good).unwrap() += amt;
+    }
+
+    pub fn pre_made(num: usize) -> HashMap<AgentId, Agent> {
+        let mut agents = HashMap::with_capacity(num);
+        for _i in 0..num {
+            Agent::new_into_map(&mut agents, 100, hashmap! {Grain => 10, Food => 10});
+        }
+        agents
+    }
+
+    pub fn new(cash: i16, res: HashMap<Good, i16>) -> Agent {
+        Agent { id: new_agent_id(), cash, res }
+    }
+
+    pub fn new_into_map(map: &mut HashMap<u16, Agent>, cash: i16, res: HashMap<Good, i16>) {
+        let id = new_agent_id();
+        map.insert(id, Agent { id, cash, res });
+    }
+
+    pub fn new_with_id(id: u16, cash: i16, res: HashMap<Good, i16>) -> Agent {
+        Agent { id, cash, res }
     }
 }

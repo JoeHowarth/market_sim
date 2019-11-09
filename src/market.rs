@@ -9,7 +9,7 @@ use rand::distributions::weighted::alias_method::WeightedIndex;
 use std::iter::repeat;
 use rand::prelude::{IteratorRandom, SmallRng, SliceRandom};
 use rand::SeedableRng;
-use crate::market::UnexecutedTrades::{Sells, Buys};
+use crate::market::UnexecutedTrades::{Sells, Buys, All};
 
 pub type GoodMap<T> = HashMap<Good, T>;
 
@@ -22,7 +22,7 @@ pub trait Market {
 
 //    fn execute_trades(&mut self, agents: &mut [Agent]) -> UnexecutedTrades;
 
-    fn update_price(&mut self, ts: UnexecutedTrades) -> Result<GoodMap<i16>, Error>;
+    fn update_price(&mut self, ts: UnexecutedTrades, good: Good) -> i16;
 
     fn value(&self, good: Good, amt: i16) -> i16 {
         self.price(good) * amt
@@ -37,11 +37,6 @@ pub trait Market {
     }
 }
 
-pub enum UnexecutedTrades {
-    Buys(u16, u16),
-    Sells(u16, u16),
-}
-
 
 pub struct ClearingMarket {
     pub prices: GoodMap<i16>,
@@ -50,7 +45,7 @@ pub struct ClearingMarket {
 
 impl ClearingMarket {
     pub fn new(prices: GoodMap<i16>) -> ClearingMarket {
-        let trades = prices.iter().map(|(&k,v)| (k, Vec::new())).collect();
+        let trades = prices.iter().map(|(&k, _)| (k, Vec::new())).collect();
         ClearingMarket { prices, trades }
     }
 
@@ -85,6 +80,13 @@ fn partition_and_shuffle_trades(trades: &mut Vec<(AgentId, i16)>) -> (Vec<AgentI
     (buys, sells)
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum UnexecutedTrades {
+    Buys(u16, u16),
+    Sells(u16, u16),
+    All(u16),
+}
+
 impl Market for ClearingMarket {
     fn price(&self, good: Good) -> i16 {
         self.prices[&good]
@@ -102,8 +104,9 @@ impl Market for ClearingMarket {
         let trades = self.trades
             .get_mut(&good)
             .unwrap();
-        let total_trades = trades.len();
         let (mut buys, mut sells) = partition_and_shuffle_trades(trades);
+//        let total_trades = buys.len() + sells.len();
+        let (total_sells, total_buys) = (sells.len(), buys.len());
 
         let num_trades = buys.len().min(sells.len());
         for _ in 0..num_trades {
@@ -119,10 +122,10 @@ impl Market for ClearingMarket {
             }
         }
 
-        assert_eq!(num_trades, buys.len().max(sells.len()));
         match (buys.len(), sells.len()) {
-            (0, x) => Sells(x as u16, total_trades as u16),
-            (x, 0) => Buys(x as u16, total_trades as u16),
+            (0, 0) => All(((total_buys + total_sells) / 2) as u16),
+            (0, x) => Sells(x as u16, total_sells as u16),
+            (x, 0) => Buys(x as u16, total_buys as u16),
             (x, y) => {
                 eprintln!("Shouldn't happen {}, {}", x, y);
                 Sells(0, 0)
@@ -130,8 +133,18 @@ impl Market for ClearingMarket {
         }
     }
 
-    fn update_price(&mut self, _ts: UnexecutedTrades) -> Result<HashMap<Good, i16, RandomState>, Error> {
-        unimplemented!()
+    fn update_price(&mut self, ts: UnexecutedTrades, good: Good) -> i16 {
+        let p = self.price(good);
+        let pf = p as f64;
+        match ts {
+            All(_) => p,
+            Buys(unexecuted, executed) => {
+                (pf * (1. + 0.5 * unexecuted as f64 / executed as f64)).round() as i16
+            },
+            Sells(unexecuted, executed) => {
+                (pf * (1. - 0.5 * unexecuted as f64 / executed as f64)).round() as i16
+            },
+        }
     }
 }
 
@@ -152,9 +165,48 @@ mod tests {
         market.trade(&agents[&b], Food, 2);
         market.trade(&agents[&s], Food, -2);
 
+        let b_f = agents[&b].res[&Food];
+        let s_f = agents[&s].res[&Food];
         assert_eq!(market.trades[&Food], vec![(b, 2), (s, -2)]);
 
+        let rem = market.execute_trade(&mut agents, Food);
 
+        assert_eq!(rem, All(2));
+        assert_eq!(agents[&b].res[&Food], b_f + 2);
+        assert_eq!(agents[&s].res[&Food], s_f - 2);
+
+        let p = market.price(Food);
+        let p1 = market.update_price(rem, Food);
+        assert_eq! (p1, p);
+    }
+
+    #[test]
+    fn buy_heavy() {
+        let mut agents = Agent::pre_made(3);
+        let mut market = ClearingMarket::new(hashmap! { Food => 20, Grain => 20, });
+        let keys: Vec<_> = agents.keys().into_iter().collect();
+        let b = *keys[0];
+        let b1 = *keys[1];
+        let s = *keys[2];
+
+        market.trade(&agents[&b], Food, 2);
+        market.trade(&agents[&b1], Food, 2);
+        market.trade(&agents[&s], Food, -2);
+
+        let b_f = agents[&b].res[&Food];
+        let b1_f = agents[&b1].res[&Food];
+        let s_f = agents[&s].res[&Food];
+        assert_eq!(market.trades[&Food], vec![(b, 2),(b1, 2), (s, -2)]);
+
+        let rem = market.execute_trade(&mut agents, Food);
+
+        assert_eq!(rem, Buys(2, 4));
+        assert_eq!(agents[&b].res[&Food] + agents[&b1].res[&Food], b1_f + b_f + 2);
+        assert_eq!(agents[&s].res[&Food], s_f - 2);
+
+        let p = market.price(Food);
+        let p1 = market.update_price(rem, Food);
+        assert_eq!(p1, (p as f64 * 1.25).round() as i16);
     }
 }
 
