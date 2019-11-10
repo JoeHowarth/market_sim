@@ -12,30 +12,30 @@ use rand::prelude::SmallRng;
 use rand::SeedableRng;
 
 use market_sim1;
-use market_sim1::agent::{Agent, AgentId};
+use market_sim1::agent::{Agent, AgentId, MU};
 use market_sim1::goods::{Good::{Food, Grain}, Good, Task};
-use market_sim1::market::{ClearingMarket, Market};
+use market_sim1::market::{ClearingMarket, GoodMap, Market, UnexecutedTrades};
 use market_sim1::record::{add, flush, init_recorder, register, set_tick};
 
 fn main() {
-    init_recorder("test", false);
+    init_recorder("buy_sell", true);
     let tasks = vec![
-        Task::new("Bake", &[(Grain, 30)], (Food, 10)),
+        Task::new("Bake", &[(Grain, 40)], (Food, 10)),
         Task::new("Farm", &[], (Grain, 10)),
     ];
 
     let agents = Agent::pre_made(10);
 
     let market = ClearingMarket::new(hashmap! {
-        Food => 20,
-        Grain => 20,
+        Food => 15,
+        Grain => 5,
     });
 
     register("deaths", &["agent_id"]);
     register("tasks", &["task_name", "task_value", "revenue", "cost", "agent_id"]);
     register("price", &["good", "price", "unexecuted", "volume"]);
     register("agent_info", &["agent_id", "cash", "food", "grain"]);
-    register("food_consump", &["agent_id", "consump"]);
+    register("utility", &["agent_id", "utility", "food_consumed"]);
 
     run(tasks, agents, market, 20);
 
@@ -49,36 +49,41 @@ fn run(tasks: Vec<Task>,
     let mut dead = HashSet::with_capacity(100);
     let rng = SmallRng::from_entropy();
 
+    let food_mu = MU(vec![60_i16, 35, 33, 32, 30, 28, 10, 5, 3]);
+    let food_utils = food_mu.utility(0);
+
     for i in 0..max_iters {
         set_tick(i);
         println!("{}", i);
 //        add("price", ("Food", market.price(Food) ));
 //        add("price", ("Grain", market.price(Grain)));
 
-        const FOOD_UTILS: [i16; 9] = [60, 35, 33, 32, 30, 28, 10, 5, 3];
-        // agents consume food
-        for a in agents.values_mut() {
-            let mut consump = 0;
-            for (j, &util) in FOOD_UTILS.iter().enumerate() {
-                let val = market.value(Food, 1);
-                if util  < val || (j > 1 && a.cash < val * 2) {
-                    break;
-                }
-                let new_food = a.res[&Food] - 1;
-                if new_food < 0 {
-                    if let Err(e) = market.buy(a, Food, 1) {
-                        if j < 1 {
-                            println!("death!, {}", a.id);
-                            dead.insert(a.id);
-                        }
-                        break;
-                    }
-                }
-                *a.res.get_mut(&Food).unwrap() -= 1;
-                consump = j;
-            }
 
-            add("food_consump", (a.id, consump));
+        // register trades
+        for &good in &Good::ALL {
+            let price = market.price(good);
+            let mu = match good {
+                Food => food_mu.clone(),
+                _ => MU::from_market(&market, &tasks, good)
+            };
+            for a in agents.values() {
+                let trade = a.choose_trade(price, &mu, good);
+                market.trade((a.cash, a.id), good, trade);
+            }
+        }
+        let res = market.execute_trades(&mut agents);
+        log_prices(&res, &market);
+
+        // consume food
+        for a in agents.values_mut() {
+            let food = a.res[&Food] as usize;
+            if food <= 1 {
+                dead.insert(a.id);
+            }
+            // they've already traded what they want, so eat it all!
+            // later, factor in discounted consumption
+            add("utility", (a.id, food_utils[food.min(5)], food));
+            *a.res.get_mut(&Food).unwrap() -= 5.min(food as i16);
         }
 
         // remove dead agents
@@ -95,20 +100,19 @@ fn run(tasks: Vec<Task>,
             a.perform_task(task, &mut market);
         }
 
-        // sell everything
-        for a in agents.values_mut() {
-            let v: Vec<_> = a.res.iter()
-                .map(|(&g, &a)| (g.clone(), a.clone()))
-                .collect();
-            for (g, amt) in v {
-                if market.price(g) as f64 > 0.5 {
-                    market.sell(a, g, amt);
-                }
-            }
-        }
-
         for a in agents.values_mut() {
             add("agent_info", (a.id, &a.cash, &a.res[&Food], &a.res[&Grain]))
         }
+    }
+}
+
+fn log_prices(res: &GoodMap<UnexecutedTrades>, market: &dyn Market) {
+    for (&good, &t) in res {
+        let (un, vol) = match t {
+            UnexecutedTrades::Sells(un, vol) => (-un, vol),
+            UnexecutedTrades::Buys(un, vol) => (un, vol),
+            UnexecutedTrades::All(vol) => (0, vol)
+        };
+        add("price", (good, market.price(good), un, vol));
     }
 }

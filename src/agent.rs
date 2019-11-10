@@ -1,8 +1,11 @@
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::iter::repeat;
 use std::sync::atomic::{AtomicU16, Ordering::Relaxed};
 
 use maplit::hashmap;
+use rand::{Rng, SeedableRng};
+use rand::prelude::SmallRng;
 
 use crate::goods::{Good, Task};
 use crate::goods::Good::{Food, Grain};
@@ -24,14 +27,16 @@ pub fn new_agent_id() -> u16 {
     ID.fetch_add(1, Relaxed)
 }
 
-#[derive(Debug)]
-pub struct MU(Vec<i16>);
+#[derive(Debug, Clone)]
+pub struct MU(pub Vec<i16>);
 
 
 impl Agent {
     pub fn choose_trade(&self, price: i16, mu: &MU, good: Good) -> i16 {
-        let p= price;
+        let p = price;
         let supply = self.res[&good];
+
+//        dbg!(price, mu, good);
 
         // find min to_trade s.t. the marginal utility of buying one more is less than the price
         let mut to_trade = 0;
@@ -39,7 +44,7 @@ impl Agent {
             to_trade += 1;
         }
         // find max to_trade s.t. the marginal utility of selling one more is greater than the price
-        while mu.mu_sell(supply + to_trade) < p {
+        while mu.mu_sell(supply + to_trade) < p && to_trade + supply >= 0 {
             to_trade -= 1;
         }
         to_trade
@@ -69,8 +74,11 @@ impl Agent {
 
     pub fn pre_made(num: usize) -> HashMap<AgentId, Agent> {
         let mut agents = HashMap::with_capacity(num);
+        let mut rng = SmallRng::from_entropy();
         for _i in 0..num {
-            Agent::new_into_map(&mut agents, 100, hashmap! {Grain => 10, Food => 10});
+            Agent::new_into_map(&mut agents,
+                                100,
+                                hashmap! {Grain => rng.gen_range(5, 30), Food => rng.gen_range(6, 30)});
         }
         agents
     }
@@ -90,7 +98,7 @@ impl Agent {
 }
 
 impl MU {
-    fn from_utility(u: &[i16]) -> MU {
+    pub fn from_utility(u: &[i16]) -> MU {
         let mut mu = Vec::with_capacity(u.len() - 1);
         for i in 0..(u.len() - 1) {
             mu.push(u[i + 1] - u[i]);
@@ -98,29 +106,77 @@ impl MU {
         MU(mu)
     }
 
+    pub fn from_market(market: &dyn Market, tasks: &[Task], good: Good) -> MU {
+        let (mu, &input) = tasks.iter()
+            .filter(|&t| t.inputs
+                .iter()
+                .any(|(g, _)| *g == good))
+            .map(|task| {
+                let (good_, input) = task.inputs
+                    .iter()
+                    .filter(|(g, _)| *g == good).take(1).next().unwrap();
+                assert!(good == *good_);
+                let (out_g, output) = task.output;
+                let out_value = market.value(out_g, output);
+                let mu_prime = out_value / input;
+                dbg!((mu_prime, input))
+            }).max_by_key(|(mu, _)| *mu).unwrap();
+        dbg!(mu, input);
+
+        MU((0..3)
+            .flat_map(|i| repeat(dbg!((mu as f64 * dbg!(0.8_f64.powf(i as f64))) as i16))
+                .take(input as usize))
+            .collect())
+    }
+
+    pub fn utility(&self, u_0: i16) -> Vec<i16> {
+        let mut util = Vec::with_capacity(self.0.len() + 2);
+        util.push(u_0);
+        for (i, &d) in self.0.iter().enumerate() {
+            util.push(util[i] + d);
+        }
+        util
+    }
+
     fn mu_buy(&self, supply: i16) -> i16 {
-        self.0[supply as usize]
+        if supply as usize > self.0.len() - 1 {
+            0
+        } else {
+            self.0[supply as usize]
+        }
     }
 
     fn mu_sell(&self, supply: i16) -> i16 {
-        assert!(supply > 0);
-        self.0[(supply - 1) as usize]
+        if supply as usize > self.0.len() - 1 || supply == 0 {
+            0
+        } else {
+            self.0[supply as usize - 1]
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::hash_map::RandomState;
+
+    use failure::Error;
+
+    use crate::market::UnexecutedTrades;
+
     use super::*;
 
-    fn make_mu() -> MU {
-        let utility = [20_i16, 35, 47, 57, 62];
-        MU::from_utility(&utility)
-    }
+    #[test]
+    fn test_from_market() {
+        let tasks = vec![
+            Task::new("Bake", &[(Grain, 30)], (Food, 10)),
+            Task::new("Farm", &[], (Grain, 10)),
+        ];
+        let market = MockMarket(20);
+        let mu = MU::from_market(&market, &tasks, Grain);
 
-    fn choose_trade_builder(p: i16, s: i16) -> i16 {
-        let mut mu = make_mu();
-        let a = Agent::new(20, hashmap!{Grain => s, Food => 40});
-        a.choose_trade(p, &mu, Grain)
+        assert_eq!(mu.mu_buy(1), 6);
+        assert_eq!(mu.mu_buy(35), 4);
+        assert_eq!(mu.mu_buy(1), mu.mu_buy(28));
     }
 
     #[test]
@@ -139,5 +195,36 @@ mod tests {
         assert_eq!(choose_trade_builder(12, 0), 1);
         assert_eq!(choose_trade_builder(13, 0), 1);
         assert_eq!(choose_trade_builder(11, 0), 2);
+    }
+
+    fn make_mu() -> MU {
+        let utility = [20_i16, 35, 47, 57, 62];
+        MU::from_utility(&utility)
+    }
+
+    fn choose_trade_builder(p: i16, s: i16) -> i16 {
+        let mut mu = make_mu();
+        let a = Agent::new(20, hashmap! {Grain => s, Food => 40});
+        a.choose_trade(p, &mu, Grain)
+    }
+
+    struct MockMarket(pub i16);
+
+    impl Market for MockMarket {
+        fn price(&self, good: Good) -> i16 {
+            self.0
+        }
+
+        fn trade(&mut self, cash_and_id: (i16, u16), good: Good, amt: i16) -> Result<(), Error> {
+            unimplemented!()
+        }
+
+        fn execute_trade(&mut self, agents: &mut HashMap<u16, Agent, RandomState>, good: Good) -> UnexecutedTrades {
+            unimplemented!()
+        }
+
+        fn update_price(&mut self, ts: UnexecutedTrades, good: Good) -> i16 {
+            unimplemented!()
+        }
     }
 }

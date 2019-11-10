@@ -19,7 +19,7 @@ pub type GoodMap<T> = LinearMap<Good, T>;
 pub trait Market {
     fn price(&self, good: Good) -> i16;
 
-    fn trade(&mut self, agent: &Agent, good: Good, amt: i16) -> Result<(), Error>;
+    fn trade(&mut self, cash_and_id: (i16, u16), good: Good, amt: i16) -> Result<(), Error>;
 
     fn execute_trade(&mut self, agents: &mut HashMap<AgentId, Agent>, good: Good) -> UnexecutedTrades;
 
@@ -40,11 +40,11 @@ pub trait Market {
     }
 
     fn buy(&mut self, agent: &mut Agent, good: Good, amt: i16) -> Result<(), Error> {
-        self.trade(agent, good, amt)
+        self.trade((agent.cash, agent.id), good, amt)
     }
 
     fn sell(&mut self, agent: &mut Agent, good: Good, amt: i16) -> Result<(), Error> {
-        self.trade(agent, good, -amt)
+        self.trade((agent.cash, agent.id), good, -amt)
     }
 }
 
@@ -94,9 +94,9 @@ fn partition_and_shuffle_trades(trades: &mut Vec<(AgentId, i16)>) -> (Vec<AgentI
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum UnexecutedTrades {
-    Buys(u16, u16),
-    Sells(u16, u16),
-    All(u16),
+    Buys(i16, i16),
+    Sells(i16, i16),
+    All(i16),
 }
 
 impl Market for ClearingMarket {
@@ -104,11 +104,11 @@ impl Market for ClearingMarket {
         self.prices[&good]
     }
 
-    fn trade(&mut self, agent: &Agent, good: Good, amt: i16) -> Result<(), Error> {
-        if amt > 0 && agent.cash < self.value(good, amt) {
+    fn trade(&mut self, (cash, id): (i16, u16), good: Good, amt: i16) -> Result<(), Error> {
+        if amt > 0 && cash < self.value(good, amt) {
             Err(failure::err_msg("insufficient cash to make trade"))
         } else {
-            Ok(self.trades.get_mut(&good).unwrap().push((agent.id, amt)))
+            Ok(self.trades.get_mut(&good).unwrap().push((id, amt)))
         }
     }
 
@@ -135,9 +135,9 @@ impl Market for ClearingMarket {
         }
 
         match (buys.len(), sells.len()) {
-            (0, 0) => All(((total_buys + total_sells) / 2) as u16),
-            (0, x) => Sells(x as u16, total_sells as u16),
-            (x, 0) => Buys(x as u16, total_buys as u16),
+            (0, 0) => All(((total_buys + total_sells) / 2) as i16),
+            (0, x) => Sells(x as i16, total_sells as i16),
+            (x, 0) => Buys(x as i16, total_buys as i16),
             (x, y) => {
                 eprintln!("Shouldn't happen {}, {}", x, y);
                 Sells(0, 0)
@@ -148,15 +148,27 @@ impl Market for ClearingMarket {
     fn update_price(&mut self, ts: UnexecutedTrades, good: Good) -> i16 {
         let p = self.price(good);
         let pf = p as f64;
-        match ts {
+        let p_new = match ts {
             All(_) => p,
             Buys(unexecuted, executed) => {
-                (pf * (1. + 0.5 * unexecuted as f64 / executed as f64)).round() as i16
+                (pf * (1. + 0.25 * unexecuted as f64 / executed as f64)).round() as i16
             }
             Sells(unexecuted, executed) => {
-                (pf * (1. - 0.5 * unexecuted as f64 / executed as f64)).round() as i16
+                (pf * (1. - 0.25 * unexecuted as f64 / executed as f64)).round() as i16
             }
-        }
+        };
+        dbg!(p_new, p, ts);
+//        match ts {
+//            All(_) => assert_eq!(p_new, p),
+//            Buys(unexecuted, executed) => {
+//                assert!(p_new > p)
+//            }
+//            Sells(unexecuted, executed) => {
+//                assert!(p_new < p)
+//            }
+//        }
+        self.prices.insert(good, p_new);
+        p_new
     }
 }
 
@@ -176,8 +188,8 @@ mod tests {
         let b = *keys[0];
         let s = *keys[1];
 
-        market.trade(&agents[&b], Food, 2);
-        market.trade(&agents[&s], Food, -2);
+        market.trade((agents[&b].cash, agents[&b].id), Food, 2).unwrap();
+        market.trade((agents[&s].cash, agents[&s].id), Food, -2).unwrap();
 
         let b_f = agents[&b].res[&Food];
         let s_f = agents[&s].res[&Food];
@@ -203,9 +215,9 @@ mod tests {
         let b1 = *keys[1];
         let s = *keys[2];
 
-        market.trade(&agents[&b], Food, 2);
-        market.trade(&agents[&b1], Food, 2);
-        market.trade(&agents[&s], Food, -2);
+        market.trade((agents[&b].cash, agents[&b].id), Food, 2).unwrap();
+        market.trade((agents[&b1].cash, agents[&b1].id), Food, 2).unwrap();
+        market.trade((agents[&s].cash, agents[&s].id), Food, -2).unwrap();
 
         let b_f = agents[&b].res[&Food];
         let b1_f = agents[&b1].res[&Food];
@@ -220,7 +232,7 @@ mod tests {
 
         let p = market.price(Food);
         let p1 = market.update_price(rem, Food);
-        assert_eq!(p1, (p as f64 * 1.25).round() as i16);
+        assert_eq!(p1, (p as f64 * 1.125).round() as i16);
     }
 }
 
