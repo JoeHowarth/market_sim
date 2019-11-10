@@ -1,19 +1,21 @@
 #![allow(unused_imports, dead_code, unused_variables, unused_must_use)]
 
-use market_sim1;
-use arrayvec::ArrayVec;
-use market_sim1::goods::{Task, Good::{Food, Grain}, Good};
-use market_sim1::agent::{Agent, AgentId};
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use maplit::hashmap;
-use market_sim1::market::{Market, ClearingMarket};
-use std::iter::FromIterator;
-use std::io;
-use market_sim1::record::{init_recorder, add, register, flush, set_tick};
-use std::cell::{RefCell, Cell};
 use std::fs::File;
-use rand::SeedableRng;
+use std::io;
+use std::iter::FromIterator;
+
+use arrayvec::ArrayVec;
+use maplit::hashmap;
 use rand::prelude::SmallRng;
+use rand::SeedableRng;
+
+use market_sim1;
+use market_sim1::agent::{Agent, AgentId};
+use market_sim1::goods::{Good::{Food, Grain}, Good, Task};
+use market_sim1::market::{ClearingMarket, Market};
+use market_sim1::record::{add, flush, init_recorder, register, set_tick};
 
 fn main() {
     init_recorder("test", false);
@@ -31,7 +33,7 @@ fn main() {
 
     register("deaths", &["agent_id"]);
     register("tasks", &["task_name", "task_value", "revenue", "cost", "agent_id"]);
-    register("price", &["good", "price", "supply"]);
+    register("price", &["good", "price", "unexecuted", "volume"]);
     register("agent_info", &["agent_id", "cash", "food", "grain"]);
     register("food_consump", &["agent_id", "consump"]);
 
@@ -50,8 +52,8 @@ fn run(tasks: Vec<Task>,
     for i in 0..max_iters {
         set_tick(i);
         println!("{}", i);
-        add("price", ("Food", market.price(Food)));
-        add("price", ("Grain", market.price(Grain)));
+//        add("price", ("Food", market.price(Food) ));
+//        add("price", ("Grain", market.price(Grain)));
 
         const FOOD_UTILS: [i16; 9] = [60, 35, 33, 32, 30, 28, 10, 5, 3];
         // agents consume food

@@ -1,12 +1,18 @@
 use arrayvec::ArrayVec;
-use crate::market::Market;
 use serde::Serialize;
+
+use crate::market::Market;
 
 #[derive(Copy, Hash, Clone, Eq, PartialOrd, PartialEq, Ord, Debug, Serialize)]
 pub enum Good {
     Food,
     Grain,
 }
+
+impl Good {
+    pub const ALL:[Good;2] = [Good::Food, Good::Grain];
+}
+
 
 #[derive(Clone, Eq, PartialOrd, PartialEq, Ord, Debug, Serialize)]
 pub struct Task {

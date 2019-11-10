@@ -1,15 +1,17 @@
-use std::io;
-use csv::Writer;
 use std::collections::HashMap;
-use std::path::Path;
-use std::fs::{File, create_dir_all};
-use serde::Serialize;
-use failure::{Error, Fail};
 use std::fmt::Debug;
-use lazy_static::lazy_static;
+use std::fs::{create_dir_all, File};
+use std::io;
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
-use rand::prelude::{SeedableRng, Rng};
+
+use csv::Writer;
+use failure::{Error, Fail};
 use rand::distributions::Alphanumeric;
+use rand::prelude::{Rng, SeedableRng};
+use serde::Serialize;
+
+use lazy_static::lazy_static;
 
 lazy_static! {
     static ref REC: Mutex<Recorder> = Mutex::new(Recorder::new());

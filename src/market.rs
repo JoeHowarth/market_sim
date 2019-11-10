@@ -1,17 +1,20 @@
-use crate::goods::Good;
-use crate::agent::{Agent, AgentId};
-use failure::Error;
-use std::sync::atomic::Ordering::AcqRel;
-use std::collections::HashMap;
-use crate::record::add;
 use std::collections::hash_map::RandomState;
-use rand::distributions::weighted::alias_method::WeightedIndex;
-use std::iter::repeat;
-use rand::prelude::{IteratorRandom, SmallRng, SliceRandom};
-use rand::SeedableRng;
-use crate::market::UnexecutedTrades::{Sells, Buys, All};
+use std::collections::HashMap;
+use std::iter::{FromIterator, repeat};
+use std::sync::atomic::Ordering::AcqRel;
 
-pub type GoodMap<T> = HashMap<Good, T>;
+use failure::Error;
+use linear_map::LinearMap;
+use rand::distributions::weighted::alias_method::WeightedIndex;
+use rand::prelude::{IteratorRandom, SliceRandom, SmallRng};
+use rand::SeedableRng;
+
+use crate::agent::{Agent, AgentId};
+use crate::goods::Good;
+use crate::market::UnexecutedTrades::{All, Buys, Sells};
+use crate::record::add;
+
+pub type GoodMap<T> = LinearMap<Good, T>;
 
 pub trait Market {
     fn price(&self, good: Good) -> i16;
@@ -20,7 +23,15 @@ pub trait Market {
 
     fn execute_trade(&mut self, agents: &mut HashMap<AgentId, Agent>, good: Good) -> UnexecutedTrades;
 
-//    fn execute_trades(&mut self, agents: &mut [Agent]) -> UnexecutedTrades;
+    fn execute_trades(&mut self, agents: &mut HashMap<AgentId, Agent>) -> GoodMap<UnexecutedTrades> {
+        Good::ALL.iter()
+            .map(|&good| {
+                let unexecuted = self.execute_trade(agents, good);
+                self.update_price(unexecuted, good);
+                (good, unexecuted)
+            })
+            .collect()
+    }
 
     fn update_price(&mut self, ts: UnexecutedTrades, good: Good) -> i16;
 
@@ -44,8 +55,9 @@ pub struct ClearingMarket {
 }
 
 impl ClearingMarket {
-    pub fn new(prices: GoodMap<i16>) -> ClearingMarket {
+    pub fn new(mut prices: HashMap<Good, i16>) -> ClearingMarket {
         let trades = prices.iter().map(|(&k, _)| (k, Vec::new())).collect();
+        let prices = LinearMap::from_iter(prices.drain());
         ClearingMarket { prices, trades }
     }
 
@@ -80,7 +92,7 @@ fn partition_and_shuffle_trades(trades: &mut Vec<(AgentId, i16)>) -> (Vec<AgentI
     (buys, sells)
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum UnexecutedTrades {
     Buys(u16, u16),
     Sells(u16, u16),
@@ -140,19 +152,21 @@ impl Market for ClearingMarket {
             All(_) => p,
             Buys(unexecuted, executed) => {
                 (pf * (1. + 0.5 * unexecuted as f64 / executed as f64)).round() as i16
-            },
+            }
             Sells(unexecuted, executed) => {
                 (pf * (1. - 0.5 * unexecuted as f64 / executed as f64)).round() as i16
-            },
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::goods::Good::{Food, Grain};
     use maplit::hashmap;
+
+    use crate::goods::Good::{Food, Grain};
+
+    use super::*;
 
     #[test]
     fn hi() {
@@ -177,7 +191,7 @@ mod tests {
 
         let p = market.price(Food);
         let p1 = market.update_price(rem, Food);
-        assert_eq! (p1, p);
+        assert_eq!(p1, p);
     }
 
     #[test]
@@ -196,7 +210,7 @@ mod tests {
         let b_f = agents[&b].res[&Food];
         let b1_f = agents[&b1].res[&Food];
         let s_f = agents[&s].res[&Food];
-        assert_eq!(market.trades[&Food], vec![(b, 2),(b1, 2), (s, -2)]);
+        assert_eq!(market.trades[&Food], vec![(b, 2), (b1, 2), (s, -2)]);
 
         let rem = market.execute_trade(&mut agents, Food);
 
