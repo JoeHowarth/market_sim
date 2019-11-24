@@ -49,7 +49,7 @@ fn run(tasks: Vec<Task>,
     let mut dead = HashSet::with_capacity(100);
     let rng = SmallRng::from_entropy();
 
-    let food_mu = MU(vec![60_i16, 35, 33, 32, 30, 28, 10, 5, 3]);
+    let food_mu = MU(vec![60_i16, 30, 25, 20, 15, 10, 5, 2, 1]);
     let food_utils = food_mu.utility(0);
 
     for i in 0..max_iters {
@@ -82,7 +82,7 @@ fn run(tasks: Vec<Task>,
             }
             // they've already traded what they want, so eat it all!
             // later, factor in discounted consumption
-            add("utility", (a.id, food_utils[food.min(5)], food));
+            add("utility", (a.id, food_utils[food.min(5)], food.min(5)));
             *a.res.get_mut(&Food).unwrap() -= 5.min(food as i16);
         }
 

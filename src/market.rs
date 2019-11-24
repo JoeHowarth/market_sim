@@ -50,14 +50,14 @@ pub trait Market {
 
 
 pub struct ClearingMarket {
-    pub prices: GoodMap<i16>,
+    pub prices: GoodMap<VecDeque<i16>>,
     pub trades: GoodMap<Vec<(AgentId, i16)>>,
 }
 
 impl ClearingMarket {
     pub fn new(mut prices: HashMap<Good, i16>) -> ClearingMarket {
         let trades = prices.iter().map(|(&k, _)| (k, Vec::new())).collect();
-        let prices = LinearMap::from_iter(prices.drain());
+        let prices = LinearMap::from_iter(prices.drain().map(|p| VecDeque::new(p)));
         ClearingMarket { prices, trades }
     }
 
