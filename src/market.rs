@@ -1,5 +1,5 @@
 use std::collections::hash_map::RandomState;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::iter::{FromIterator, repeat};
 use std::sync::atomic::Ordering::AcqRel;
 
@@ -18,6 +18,7 @@ pub type GoodMap<T> = LinearMap<Good, T>;
 
 pub trait Market {
     fn price(&self, good: Good) -> i16;
+    fn old_price(&self, good:Good) -> i16;
 
     fn trade(&mut self, cash_and_id: (i16, u16), good: Good, amt: i16) -> Result<(), Error>;
 
@@ -50,14 +51,16 @@ pub trait Market {
 
 
 pub struct ClearingMarket {
-    pub prices: GoodMap<VecDeque<i16>>,
+    pub prices: GoodMap<(i16, i16, UnexecutedTrades)>,
     pub trades: GoodMap<Vec<(AgentId, i16)>>,
 }
 
 impl ClearingMarket {
     pub fn new(mut prices: HashMap<Good, i16>) -> ClearingMarket {
         let trades = prices.iter().map(|(&k, _)| (k, Vec::new())).collect();
-        let prices = LinearMap::from_iter(prices.drain().map(|p| VecDeque::new(p)));
+        let prices = LinearMap::from_iter(prices
+            .drain()
+            .map(|(g, p)| (g, (p, p, All(0)))));
         ClearingMarket { prices, trades }
     }
 
@@ -101,7 +104,10 @@ pub enum UnexecutedTrades {
 
 impl Market for ClearingMarket {
     fn price(&self, good: Good) -> i16 {
-        self.prices[&good]
+        self.prices[&good].0
+    }
+    fn old_price(&self, good: Good) -> i16 {
+        self.prices[&good].1
     }
 
     fn trade(&mut self, (cash, id): (i16, u16), good: Good, amt: i16) -> Result<(), Error> {
@@ -146,18 +152,27 @@ impl Market for ClearingMarket {
     }
 
     fn update_price(&mut self, ts: UnexecutedTrades, good: Good) -> i16 {
-        let p = self.price(good);
-        let pf = p as f64;
+        let (p0, p1, old_unex) = self.prices[&good];
+        let (p0, p1) = (p0 as f64, p1 as f64);
+        let dp = p0 - p1; // dp > 0 if price increased
         let p_new = match ts {
-            All(_) => p,
-            Buys(unexecuted, executed) => {
-                (pf * (1. + 0.25 * unexecuted as f64 / executed as f64)).round() as i16
+            All(_) => p0,
+            Buys(_, _) | Sells(_, _) => {
+                match old_unex {
+                    All(_) => p0 * (1. + 0.25 * unex_ratio(ts)),
+                    old => {
+                        let r0 = unex_ratio(ts);
+                        let r1 = unex_ratio(old);
+                        if r0 * r1 < 0. { // if the sell -> buy or buy -> sell...
+                            p0 + dp * 0.5 * r0 / r1
+                        } else {
+                            p0 + dp * r0 / r1
+                        }
+                    }
+                }
             }
-            Sells(unexecuted, executed) => {
-                (pf * (1. - 0.25 * unexecuted as f64 / executed as f64)).round() as i16
-            }
-        };
-        dbg!(p_new, p, ts);
+        }.round().max(0.) as i16;
+        dbg!(p_new, p0, ts);
 //        match ts {
 //            All(_) => assert_eq!(p_new, p),
 //            Buys(unexecuted, executed) => {
@@ -167,8 +182,16 @@ impl Market for ClearingMarket {
 //                assert!(p_new < p)
 //            }
 //        }
-        self.prices.insert(good, p_new);
+        *self.prices.get_mut(&good).unwrap() = (p_new, p0.round() as i16, ts);
         p_new
+    }
+}
+
+fn unex_ratio(a: UnexecutedTrades) -> f64 {
+    match a {
+        Buys(u0, e0) => u0 as f64 / e0 as f64,
+        Sells(u0, e0) => -u0 as f64 / e0 as f64,
+        All(_) => 1.
     }
 }
 

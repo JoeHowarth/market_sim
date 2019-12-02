@@ -10,6 +10,7 @@ use rand::prelude::SmallRng;
 use crate::goods::{Good, Task};
 use crate::goods::Good::{Food, Grain};
 use crate::market::Market;
+use std::cmp::Reverse;
 
 pub type AgentId = u16;
 
@@ -28,7 +29,7 @@ pub fn new_agent_id() -> u16 {
 }
 
 #[derive(Debug, Clone)]
-pub struct MU(pub Vec<i16>);
+pub struct MU(pub Vec<(i16, u8)>);
 
 
 impl Agent {
@@ -36,7 +37,7 @@ impl Agent {
         let p = price;
         let supply = self.res[&good];
 
-//        dbg!(price, mu, good);
+        dbg!(p, supply);
 
         // find min to_trade s.t. the marginal utility of buying one more is less than the price
         let mut to_trade = 0;
@@ -78,7 +79,7 @@ impl Agent {
         for _i in 0..num {
             Agent::new_into_map(&mut agents,
                                 100,
-                                hashmap! {Grain => rng.gen_range(5, 30), Food => rng.gen_range(6, 30)});
+                                hashmap! {Grain => rng.gen_range(5, 30), Food => rng.gen_range(2, 15)});
         }
         agents
     }
@@ -98,11 +99,32 @@ impl Agent {
 }
 
 impl MU {
-    pub fn from_utility(u: &[i16]) -> MU {
+    pub fn from_utility(u: &[i16], discount: f64) -> MU {
         let mut mu = Vec::with_capacity(u.len() - 1);
+        let d2 = discount * discount;
         for i in 0..(u.len() - 1) {
-            mu.push(u[i + 1] - u[i]);
+            let cur = u[i + 1] - u[i];
+            mu.push((cur, 0));
+            mu.push(((cur as f64 * discount).round() as i16, 1));
+            mu.push(((cur as f64 * d2).round() as i16, 2));
+            mu.push(((cur as f64 * d2 * discount).round() as i16, 3));
+            mu.push(((cur as f64 * d2 * d2).round() as i16, 4));
         }
+        mu.sort_by_key(|&x| Reverse(x.clone()));
+        MU(mu)
+    }
+
+    pub fn from_curr_mu(curr_mu: &[i16], discount: f64) -> MU {
+        let mut mu = Vec::with_capacity(curr_mu.len() * 2);
+        let d2 = discount * discount;
+        for i in 0..curr_mu.len() {
+            mu.push((curr_mu[i], 0));
+            mu.push(((curr_mu[i] as f64 * discount).round() as i16, 1));
+            mu.push(((curr_mu[i] as f64 * d2).round() as i16, 2));
+            mu.push(((curr_mu[i] as f64 * d2 * discount).round() as i16, 3));
+            mu.push(((curr_mu[i] as f64 * d2 * d2).round() as i16, 4));
+        }
+        mu.sort_by_key(|&x| Reverse(x.clone()));
         MU(mu)
     }
 
@@ -124,7 +146,7 @@ impl MU {
         dbg!(mu, input);
 
         MU((0..3)
-            .flat_map(|i| repeat(dbg!((mu as f64 * dbg!(0.8_f64.powf(i as f64))) as i16))
+            .flat_map(|i| repeat((dbg!((mu as f64 * dbg!(0.8_f64.powf(i as f64))) as i16), i))
                 .take(input as usize))
             .collect())
     }
@@ -132,17 +154,33 @@ impl MU {
     pub fn utility(&self, u_0: i16) -> Vec<i16> {
         let mut util = Vec::with_capacity(self.0.len() + 2);
         util.push(u_0);
-        for (i, &d) in self.0.iter().enumerate() {
+        for (i, &(d, _)) in self.0.iter().enumerate() {
             util.push(util[i] + d);
         }
         util
+    }
+
+    pub fn mu_consume(&self, supply: i16) -> i16 {
+        let mut to_consume = 0;
+        let mut to_save = 0;
+        for (_d, i) in &self.0 {
+            dbg!(to_consume, to_save, _d, i);
+            if to_save + to_consume >= supply {
+                break
+            } else if *i > 0 {
+                to_save += 1;
+            } else {
+                to_consume += 1;
+            }
+        }
+        return to_consume;
     }
 
     fn mu_buy(&self, supply: i16) -> i16 {
         if supply as usize > self.0.len() - 1 {
             0
         } else {
-            self.0[supply as usize]
+            self.0[supply as usize].0
         }
     }
 
@@ -150,7 +188,7 @@ impl MU {
         if supply as usize > self.0.len() - 1 || supply == 0 {
             0
         } else {
-            self.0[supply as usize - 1]
+            self.0[supply as usize - 1].0
         }
     }
 }
@@ -185,6 +223,10 @@ mod tests {
 
         assert_eq!(mu.mu_buy(2), 10);
         assert_eq!(mu.mu_sell(2), 12);
+
+        dbg!(&mu);
+        assert_eq!(mu.mu_consume(3), 3);
+        assert_eq!(mu.mu_consume(10), 4);
     }
 
     #[test]
@@ -199,11 +241,11 @@ mod tests {
 
     fn make_mu() -> MU {
         let utility = [20_i16, 35, 47, 57, 62];
-        MU::from_utility(&utility)
+        MU::from_utility(&utility, 0.4)
     }
 
     fn choose_trade_builder(p: i16, s: i16) -> i16 {
-        let mut mu = make_mu();
+        let mu = make_mu();
         let a = Agent::new(20, hashmap! {Grain => s, Food => 40});
         a.choose_trade(p, &mu, Grain)
     }
@@ -211,19 +253,23 @@ mod tests {
     struct MockMarket(pub i16);
 
     impl Market for MockMarket {
-        fn price(&self, good: Good) -> i16 {
+        fn price(&self, _good: Good) -> i16 {
             self.0
         }
 
-        fn trade(&mut self, cash_and_id: (i16, u16), good: Good, amt: i16) -> Result<(), Error> {
+        fn old_price(&self, _good: Good) -> i16 {
             unimplemented!()
         }
 
-        fn execute_trade(&mut self, agents: &mut HashMap<u16, Agent, RandomState>, good: Good) -> UnexecutedTrades {
+        fn trade(&mut self, _cash_and_id: (i16, u16), _good: Good, _amt: i16) -> Result<(), Error> {
             unimplemented!()
         }
 
-        fn update_price(&mut self, ts: UnexecutedTrades, good: Good) -> i16 {
+        fn execute_trade(&mut self, _agents: &mut HashMap<u16, Agent, RandomState>, _good: Good) -> UnexecutedTrades {
+            unimplemented!()
+        }
+
+        fn update_price(&mut self, _ts: UnexecutedTrades, _good: Good) -> i16 {
             unimplemented!()
         }
     }
