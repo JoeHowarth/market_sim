@@ -16,20 +16,25 @@ use market_sim1::agent::{Agent, AgentId, MU};
 use market_sim1::goods::{Good::{Food, Grain}, Good, Task};
 use market_sim1::market::{ClearingMarket, GoodMap, Market, UnexecutedTrades};
 use market_sim1::record::{add, flush, init_recorder, register, set_tick};
+use std::io::Write;
 
 fn main() {
+    dbg!("start");
+    std::io::stdout().flush();
     init_recorder("adapt v1", true);
     let tasks = vec![
-        Task::new("Bake", &[(Grain, 20)], (Food, 10)),
+        Task::new("Bake", &[(Grain, 15)], (Food, 10)),
         Task::new("Farm", &[], (Grain, 10)),
     ];
 
-    let agents = Agent::pre_made(10);
+    dbg!("here");
+    let agents = Agent::pre_made(3);
 
     let market = ClearingMarket::new(hashmap! {
-        Food => 15,
+        Food => 25,
         Grain => 5,
     });
+    dbg!("here2");
 
     register("deaths", &["agent_id"]);
     register("tasks", &["task_name", "task_value", "revenue", "cost", "agent_id"]);
@@ -37,6 +42,7 @@ fn main() {
     register("agent_info", &["agent_id", "cash", "food", "grain"]);
     register("utility", &["agent_id", "utility", "food_consumed"]);
 
+    dbg!("running...");
     run(tasks, agents, market, 20);
 
     flush();
@@ -59,7 +65,7 @@ fn run(tasks: Vec<Task>,
 //        add("price", ("Grain", market.price(Grain)));
 
 
-        for trade_round in 0..3 {
+        for trade_round in 0..2 {
             // register trades
             for &good in &Good::ALL {
                 let price = market.price(good);
@@ -84,8 +90,11 @@ fn run(tasks: Vec<Task>,
             }
             // they've already traded what they want, so eat it all!
             // later, factor in discounted consumption
-            add("utility", (a.id, food_utils[food.min(5)], food.min(5)));
-            *a.res.get_mut(&Food).unwrap() -= 5.min(food_mu.mu_consume(food as i16));
+            let consumption = 5.min(food_mu.mu_consume(food as i16));
+            add("utility", (a.id, food_utils[food.min(5)], consumption));
+            dbg!(food);
+            *a.res.get_mut(&Food).unwrap() -= consumption;
+            dbg!(a.res[&Food]);
         }
 
         // remove dead agents
@@ -100,6 +109,7 @@ fn run(tasks: Vec<Task>,
             let task = a.choose_task(&tasks, &market);
             add("tasks", (&task.name, task.value(&market), a.id));
             a.perform_task(task, &mut market);
+            println!("Id {} working {:?}", a.id, &task.name);
         }
 
         for a in agents.values_mut() {

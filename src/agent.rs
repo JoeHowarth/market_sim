@@ -11,6 +11,7 @@ use crate::goods::{Good, Task};
 use crate::goods::Good::{Food, Grain};
 use crate::market::Market;
 use std::cmp::Reverse;
+use crate::record::add;
 
 pub type AgentId = u16;
 
@@ -37,7 +38,7 @@ impl Agent {
         let p = price;
         let supply = self.res[&good];
 
-        dbg!(p, supply);
+//        dbg!(p, supply);
 
         // find min to_trade s.t. the marginal utility of buying one more is less than the price
         let mut to_trade = 0;
@@ -54,8 +55,24 @@ impl Agent {
     pub fn choose_task(&self, tasks: &'a [Task], market: &dyn Market) -> &'a Task {
         tasks.iter()
             .max_by_key(|&task| {
-                let (val, _, cost) = task.value(market);
-                if cost < self.cash { val as i32 } else { 0 }
+                let (val, rev, cost) = task.value(market);
+                let have_inputs = task.inputs.iter()
+                    .all(|(g, amt)| {
+                        if self.res[g] >= *amt {
+                            true
+                        } else {
+                            dbg!(self.res[g], amt, g);
+                            false
+                        }
+                    });
+
+                add("tasks", (&task.name, (val, rev, cost), -1));
+                if have_inputs {
+                    val as i32
+                } else {
+                    println!("excluding task due to insufficient resources: {}, v: {:?}", &task.name, (val, rev, cost));
+                    0
+                }
             })
             .expect("If tasks non-empty, then should have best task")
     }
@@ -70,7 +87,9 @@ impl Agent {
             *self.res.get_mut(&good).unwrap() -= amt;
         }
         let &(good, amt) = &task.output;
+        println!("Good before: {:?}, {:?}", good, self.res[&good]);
         *self.res.get_mut(&good).unwrap() += amt;
+        println!("after: {:?}", self.res[&good]);
     }
 
     pub fn pre_made(num: usize) -> HashMap<AgentId, Agent> {
@@ -141,13 +160,15 @@ impl MU {
                 let (out_g, output) = task.output;
                 let out_value = market.value(out_g, output);
                 let mu_prime = out_value / input;
-                dbg!((mu_prime, input))
+                (mu_prime, input)
             }).max_by_key(|(mu, _)| *mu).unwrap();
-        dbg!(mu, input);
+//        dbg!(mu, input);
 
         MU((0..3)
-            .flat_map(|i| repeat((dbg!((mu as f64 * dbg!(0.8_f64.powf(i as f64))) as i16), i))
-                .take(input as usize))
+            .flat_map(|i| {
+                repeat((((mu as f64 * 0.8_f64.powf(i as f64)) as i16), i))
+                .take(input as usize)
+            })
             .collect())
     }
 
@@ -164,7 +185,7 @@ impl MU {
         let mut to_consume = 0;
         let mut to_save = 0;
         for (_d, i) in &self.0 {
-            dbg!(to_consume, to_save, _d, i);
+//            dbg!(to_consume, to_save, _d, i);
             if to_save + to_consume >= supply {
                 break
             } else if *i > 0 {
@@ -173,6 +194,7 @@ impl MU {
                 to_consume += 1;
             }
         }
+        dbg!(to_consume);
         return to_consume;
     }
 
@@ -224,7 +246,7 @@ mod tests {
         assert_eq!(mu.mu_buy(2), 10);
         assert_eq!(mu.mu_sell(2), 12);
 
-        dbg!(&mu);
+        //dbg!(&mu);
         assert_eq!(mu.mu_consume(3), 3);
         assert_eq!(mu.mu_consume(10), 4);
     }

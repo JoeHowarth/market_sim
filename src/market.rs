@@ -18,7 +18,13 @@ pub type GoodMap<T> = LinearMap<Good, T>;
 
 pub trait Market {
     fn price(&self, good: Good) -> i16;
-    fn old_price(&self, good:Good) -> i16;
+    fn old_price(&self, good: Good) -> i16;
+
+    fn values(&self, goods: &[(Good, i16)]) -> i16 {
+        goods.iter()
+            .map(|&(g, amt)| self.value(g, amt))
+            .sum()
+    }
 
     fn trade(&mut self, cash_and_id: (i16, u16), good: Good, amt: i16) -> Result<(), Error>;
 
@@ -172,7 +178,7 @@ impl Market for ClearingMarket {
                 }
             }
         }.round().max(0.) as i16;
-        dbg!(p_new, p0, ts);
+        //dbg!(p_new, p0, ts);
 //        match ts {
 //            All(_) => assert_eq!(p_new, p),
 //            Buys(unexecuted, executed) => {
