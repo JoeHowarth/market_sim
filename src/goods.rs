@@ -22,11 +22,11 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn value(&self, market: &dyn Market) -> (i16, i16, i16) {
+    pub fn value(&self, market: &dyn Market, skill: f32) -> (i16, i16, i16) {
         let cost = self.inputs.iter()
             .map(|(good, amt)| market.value(*good, *amt))
             .sum();
-        let revenue = market.value(self.output.0, self.output.1);
+        let revenue = market.value(self.output.0, (self.output.1 as f32 * skill).round() as i16);
         (revenue - cost, revenue, cost)
     }
 

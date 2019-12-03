@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use std::iter::repeat;
 use std::sync::atomic::{AtomicU16, Ordering::Relaxed};
 
-use maplit::hashmap;
+use maplit::{hashmap, convert_args};
 use rand::{Rng, SeedableRng};
-use rand::prelude::SmallRng;
+use rand::prelude::{SmallRng, SliceRandom};
 
 use crate::goods::{Good, Task};
 use crate::goods::Good::{Food, Grain};
-use crate::market::Market;
+use crate::market::{Market, GoodMap};
 use std::cmp::Reverse;
 use crate::record::add;
 
@@ -20,6 +20,7 @@ pub struct Agent {
     pub id: AgentId,
     pub cash: i16,
     pub res: HashMap<Good, i16>,
+    pub skill: HashMap<Good, f32>,
 }
 
 // track last used id
@@ -49,13 +50,14 @@ impl Agent {
         while mu.mu_sell(supply + to_trade) < p && to_trade + supply >= 0 {
             to_trade -= 1;
         }
+        add("trades", (good, price, supply, to_trade, self.id));
         to_trade
     }
 
     pub fn choose_task(&self, tasks: &'a [Task], market: &dyn Market) -> &'a Task {
         tasks.iter()
             .max_by_key(|&task| {
-                let (val, rev, cost) = task.value(market);
+                let (val, rev, cost) = task.value(market, self.skill[&task.output.0]);
                 let have_inputs = task.inputs.iter()
                     .all(|(g, amt)| {
                         if self.res[g] >= *amt {
@@ -88,7 +90,7 @@ impl Agent {
         }
         let &(good, amt) = &task.output;
         println!("Good before: {:?}, {:?}", good, self.res[&good]);
-        *self.res.get_mut(&good).unwrap() += amt;
+        *self.res.get_mut(&good).unwrap() += (amt as f32 * self.skill[&good]).round() as i16;
         println!("after: {:?}", self.res[&good]);
     }
 
@@ -96,24 +98,30 @@ impl Agent {
         let mut agents = HashMap::with_capacity(num);
         let mut rng = SmallRng::from_entropy();
         for _i in 0..num {
+            let f: Vec<&f32> = [0.1, 1.0, 1.0, 2.0].choose_multiple(&mut rng, 2).collect::<Vec<&f32>>();
             Agent::new_into_map(&mut agents,
-                                100,
-                                hashmap! {Grain => rng.gen_range(5, 30), Food => rng.gen_range(2, 15)});
+                                rng.gen_range(100, 500),
+                                hashmap! {Grain => rng.gen_range(5, 90), Food => rng.gen_range(2, 15)},
+                                hashmap! {Grain => *f[0], Food => *f[1]},
+            );
         }
         agents
     }
 
-    pub fn new(cash: i16, res: HashMap<Good, i16>) -> Agent {
-        Agent { id: new_agent_id(), cash, res }
+    pub fn new(cash: i16, res: HashMap<Good, i16>, skill: HashMap<Good, f32>) -> Agent {
+        Agent { id: new_agent_id(), cash, res, skill }
     }
 
-    pub fn new_into_map(map: &mut HashMap<u16, Agent>, cash: i16, res: HashMap<Good, i16>) {
+    pub fn new_into_map(map: &mut HashMap<u16, Agent>,
+                        cash: i16,
+                        res: HashMap<Good, i16>,
+                        skill: HashMap<Good, f32>) {
         let id = new_agent_id();
-        map.insert(id, Agent { id, cash, res });
+        map.insert(id, Agent { id, cash, res, skill });
     }
 
-    pub fn new_with_id(id: u16, cash: i16, res: HashMap<Good, i16>) -> Agent {
-        Agent { id, cash, res }
+    pub fn new_with_id(id: u16, cash: i16, res: HashMap<Good, i16>, skill: HashMap<Good, f32>) -> Agent {
+        Agent { id, cash, res, skill }
     }
 }
 
@@ -167,7 +175,7 @@ impl MU {
         MU((0..3)
             .flat_map(|i| {
                 repeat((((mu as f64 * 0.8_f64.powf(i as f64)) as i16), i))
-                .take(input as usize)
+                    .take(input as usize)
             })
             .collect())
     }
@@ -187,7 +195,7 @@ impl MU {
         for (_d, i) in &self.0 {
 //            dbg!(to_consume, to_save, _d, i);
             if to_save + to_consume >= supply {
-                break
+                break;
             } else if *i > 0 {
                 to_save += 1;
             } else {

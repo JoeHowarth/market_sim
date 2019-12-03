@@ -129,8 +129,10 @@ impl Market for ClearingMarket {
             .get_mut(&good)
             .unwrap();
         let (mut buys, mut sells) = partition_and_shuffle_trades(trades);
+        println!("execute trade: trades, buys, sells, {:?}, {:?}, {:?}", &trades, &buys, &sells);
 //        let total_trades = buys.len() + sells.len();
         let (total_sells, total_buys) = (sells.len(), buys.len());
+        dbg!(total_sells, total_buys);
 
         let num_trades = buys.len().min(sells.len());
         for _ in 0..num_trades {
@@ -146,6 +148,7 @@ impl Market for ClearingMarket {
             }
         }
 
+        dbg!(buys.len(), sells.len());
         match (buys.len(), sells.len()) {
             (0, 0) => All(((total_buys + total_sells) / 2) as i16),
             (0, x) => Sells(x as i16, total_sells as i16),
@@ -171,8 +174,10 @@ impl Market for ClearingMarket {
                         let r1 = unex_ratio(old);
                         if r0 * r1 < 0. { // if the sell -> buy or buy -> sell...
                             p0 + dp * 0.5 * r0 / r1
+                        } else if dp.abs() > 0.5 {
+                            p0 + dp * 1.5 * r0 / r1
                         } else {
-                            p0 + dp * r0 / r1
+                            p0 + 2. * r0 / r1.abs()
                         }
                     }
                 }
